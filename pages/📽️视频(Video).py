@@ -4,7 +4,7 @@ import time
 import torch
 import datetime
 import streamlit as st
-from utils.utils import (get_whisper_result, kimi_translate, openai_translate1, openai_translate2,
+from utils.utils import (get_whisper_result, kimi_translate, openai_translate1, openai_translate2,google_translate,
                          generate_srt_from_result, srt_mv, srt_to_vtt, srt_to_ass, srt_to_stl, show_video,
                          parse_srt_file, convert_to_srt)
 
@@ -44,7 +44,7 @@ col1, col2 = st.columns(2, gap="medium")
 with col1:
     with st.expander("**识别设置**", expanded=True):
         # GPU
-        GPU_on = st.toggle('启用GPU加速*', disabled=not torch.cuda.is_available(), help='自动检测cuda、pytorch可用后开启！')
+        GPU_on = st.toggle('启用GPU加速*', help='自动检测cuda、pytorch可用后开启！')
         device = 'cuda' if GPU_on else 'cpu'
         # VAD
         VAD_on = st.toggle('启用VAD辅助*', help='启用语音活动检测（VAD）以过滤掉没有语音的音频部分,仅支持faster-whisper使用。')
@@ -54,7 +54,7 @@ with col1:
         lang = st.selectbox('选择视频语言', language, index=0, help="强制指定视频语言会提高识别准确度，但也可能会造成识别出错。")
 
     with st.expander("**翻译设置**", expanded=True):
-        translate_option = st.selectbox('选择翻译引擎', ('kimi-moonshot-v1-8k', 'kimi-moonshot-v1-32k', 'kimi-moonshot-v1-128k', 'gpt-3.5-turbo', 'gpt-4', '无需翻译'), index=0)
+        translate_option = st.selectbox('选择翻译引擎', ('kimi-moonshot-v1-8k', 'kimi-moonshot-v1-32k', 'kimi-moonshot-v1-128k', 'gpt-3.5-turbo', 'gpt-4', 'google', '无需翻译'), index=0)
         if translate_option != '无需翻译':
             language = ('中文', 'English', '日本語', '한국인', 'Italiano', 'Deutsch')
             col3, col4 = st.columns(2)
@@ -87,47 +87,73 @@ with col1:
         if uploaded_file is not None:
 
             time1 = time.time()
-            with st.spinner('正在加载视频缓存...'):
-                current_time = datetime.datetime.now().strftime("%Y-%m-%d %H-%M-%S")
-                output_file = cache_dir + current_time
-                os.makedirs(output_file)
-                with open(output_file + "/uploaded.mp4", "wb") as file:
-                    file.write(uploaded_file.getbuffer())
+            current_time = datetime.datetime.now().strftime("%Y-%m-%d")
+            raw_file_name=uploaded_file.name[:-4]
+            output_path = cache_dir+current_time+'/' + str(hash(raw_file_name)%100000)
+            raw_file_path = output_path + "/raw.mp4"
+            whisper_file_path = output_path +"/gen.whisper"
+            subtitle_file_path = output_path +"/gen.srt"
+            generate_video_file = output_path +"/gen.mp4"
 
+            with st.spinner('正在加载视频...'):
+                
+                if not os.path.exists(output_path):
+                    os.makedirs(output_path)
+                
+                if os.path.exists(raw_file_path):
+                    st.spinner('文件已经存在...')
+                else:
+                    with open(raw_file_path, "wb") as file:
+                        file.write(uploaded_file.getbuffer())
             time2 = time.time()
             with st.spinner('正在识别视频内容...'):
-                models_option = st.session_state.w_model_option
-                if st.session_state.local:
-                    models_option = st.session_state.model_local_path
-                result = get_whisper_result(uploaded_file, output_file, device, models_option,
-                                            st.session_state.w_name, vad, lang, beam_size, min_vad)
-                print("whisper识别：" + result['text'])
+                if os.path.isfile(whisper_file_path):
+                    with open(whisper_file_path, "r", encoding="utf-8") as f:
+                        raw_result = f.read()
+                        result = eval(raw_result)
+                    st.spinner("从缓存中读取到whisper的结果：")
+                else:
+                    models_option = st.session_state.w_model_option
+                    if st.session_state.local:
+                        models_option = st.session_state.model_local_path
+                    result = get_whisper_result(uploaded_file, output_path, device, models_option,
+                                                st.session_state.w_name, vad, lang, beam_size, min_vad)
+                    print("whisper识别：" + result['text'])
+
+                    # 将结果写入文件
+                    with open(whisper_file_path, "w", encoding="utf-8") as f:
+                        f.write(str(result))
+
+
 
             time3 = time.time()
             if translate_option != '无需翻译':
-                with st.spinner('正在翻译文本...'):
-                    if translate_option == 'gpt-3.5-turbo':
-                        result = openai_translate1(st.session_state.openai_key, st.session_state.openai_base,
-                                                   proxy_on, result, language1, language2)
-                    elif translate_option == 'gpt-4':
-                        result = openai_translate2(st.session_state.openai_key, st.session_state.openai_base,
-                                                   proxy_on, result, language1, language2, token_num)
-                    else:
-                        result = kimi_translate(st.session_state.kimi_key, translate_option, result, language1, language2, token_num)
-
+                if not os.path.isfile(subtitle_file_path):
+                    with st.spinner('正在翻译文本...'):
+                        if translate_option == 'gpt-3.5-turbo':
+                            result = openai_translate1(st.session_state.openai_key, st.session_state.openai_base,
+                                                    proxy_on, result, language1, language2)
+                        elif translate_option == 'gpt-4':
+                            result = openai_translate2(st.session_state.openai_key, st.session_state.openai_base,
+                                                    proxy_on, result, language1, language2, token_num)
+                        elif translate_option == 'google':
+                            result = google_translate(result, language1, language2)
+                        else:
+                            result = kimi_translate(st.session_state.kimi_key, translate_option, result, language1, language2, token_num)
             time4 = time.time()
             with st.spinner('正在生成SRT字幕文件...'):
                 srt_content = generate_srt_from_result(result)
-                with open(output_file + "/output.srt", 'w', encoding='utf-8') as srt_file:
+                with open(subtitle_file_path, 'w', encoding='utf-8') as srt_file:
                     srt_file.write(srt_content)
 
             time5 = time.time()
             with st.spinner('正在合并视频，请耐心等待视频生成...'):
-                srt_mv(output_file, font, font_size, font_color)
+                srt_mv(output_path,raw_file_path,subtitle_file_path,generate_video_file)
 
             time6 = time.time()
             st.session_state.srt_content = srt_content
-            st.session_state.output = output_file
+            st.session_state.output = output_path
+            st.session_state.output_file = generate_video_file
             st.session_state.current = current_time
             st.session_state.time = time6 - time1
         else:
@@ -136,7 +162,7 @@ with col1:
 with col2:
     with st.expander("**视频预览**", expanded=True):
         try:
-            video_bytes = show_video(st.session_state.output)
+            video_bytes = show_video(st.session_state.output_file)
             st.video(video_bytes)
             formatted_result = f"{st.session_state.time:.2f}"
             st.success(f"合并成功！总用时：{formatted_result}秒")

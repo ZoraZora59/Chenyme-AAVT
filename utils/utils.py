@@ -3,6 +3,8 @@ import math
 import time
 import whisper
 import tempfile
+import requests
+# from google.cloud import translate_v2 as google_translate
 import subprocess
 import pandas as pd
 import streamlit as st
@@ -20,6 +22,13 @@ from langchain.prompts import (
 
 # 视频博客文章生成助手
 
+
+language_map = {
+    '中文': 'zh',
+    'English': 'en',
+    '日本語': 'ja',
+    '한국인': 'ko'
+}
 
 @st.cache_resource
 def audio_chatbot(system, prompt, key, base):  # 音频助手
@@ -133,6 +142,14 @@ def chunk_for_gpt4(result, n):  # GPT4分块
         texts[index] += segment['text'] + "<br>\n"
     return texts
 
+def chunk_for_google(result):  # Google分块
+    texts = [''] * len(result['segments'])
+    index = 0
+    for segment in result['segments']:
+        texts[index] += segment['text']
+        index=index+1
+    return texts
+
 
 def openai_translate2(key, base, proxy_on, result, language1, language2, n):  # 调用GPT4翻译
     segment_id = 0
@@ -157,6 +174,44 @@ def openai_translate2(key, base, proxy_on, result, language1, language2, n):  # 
                         content = content.replace("<br>", "")
                     else:
                         content = content
+                    result['segments'][segment_id]['text'] = content
+                    segment_id += 1
+    return result
+
+def google_api(content):
+    
+    proxy = {'http': 'http://127.0.0.1:7890',
+         'https': 'http://127.0.0.1:7890'}
+    url = "https://translation.googleapis.com/language/translate/v2"
+    data = {
+        'key': "", #你自己的api密钥
+        'target': 'zh',
+        'q': content,
+        'format': 'text'
+    }
+    headers = {'X-HTTP-Method-Override': 'GET'}
+    response = requests.get(url, params=data, headers=headers,proxies=proxy)
+    res = response.json()
+    text = res["data"]["translations"][0]["translatedText"]
+    return text
+
+def google_translate(result, language1, language2):  # 调用Google翻译
+
+    segment_id = 0
+    texts = chunk_for_google(result)
+    language1=language_map.get(language1)
+    language2=language_map.get(language2)
+
+    for text in texts:
+        if text:
+            answer = google_api(text)
+            # result = translate_client.translate(text, target_language=language2)
+            # answer = result["translatedText"]
+            print(answer)
+            contents = answer.split('\n')
+            time.sleep(0.01)
+            for content in contents:
+                if content and '```' not in content:
                     result['segments'][segment_id]['text'] = content
                     segment_id += 1
     return result
@@ -236,9 +291,8 @@ def generate_srt_from_result(result):  # 格式化为SRT字幕的形式
     return srt_content
 
 
-def srt_mv(v_dir, font, font_size, font_color):  # 视频合成字幕
-    modified_color = font_color.replace("#", "H")
-    command = ' ffmpeg -i "' + "uploaded.mp4" + '" -lavfi ' + '"subtitles=' + 'output.srt' + ':force_style=' + "'FontName=" + font + ",FontSize=" + str(font_size) + ",PrimaryColour=&" + modified_color + "&,Outline=1,Shadow=1,BackColour=&#9C9C9C&,Bold=-1,Alignment=2'" + '"' + ' -y -crf 1 -c:a copy "' + "output.mp4" + '"'
+def srt_mv(v_dir, file_name,srt_file_name,new_file_name):  # 视频合成字幕
+    command = 'ffmpeg -i '+'"'+file_name+'"'+' -i '+'"'+srt_file_name+'"'+' -c copy '+'"'+new_file_name+'"'
     subprocess.run(command, shell=True, cwd=v_dir)
 
 
@@ -279,8 +333,8 @@ def srt_to_stl(srt_content):
 
 
 @st.cache_resource
-def show_video(cache_dir):
-    video_file = open(cache_dir + "/output.mp4", 'rb')
+def show_video(file):
+    video_file = open(file, 'rb')
     video_bytes = video_file.read()
     return video_bytes
 
